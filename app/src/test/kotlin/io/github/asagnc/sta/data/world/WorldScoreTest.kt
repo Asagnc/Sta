@@ -215,6 +215,43 @@ class WorldScoreTest {
         assertTrue(value <= 1.0)
     }
 
+    // ---- 取用率因子 ----
+
+    @Test
+    fun `取用次数必须能抬高条目`() {
+        // 分母含 helpful 时 (1+h)/(1+h+bad) 在 bad=0 处恒等于 1，取用记录等于无效。
+        val fresh = WorldScore.usageFactor(helpful = 0, harmful = 0, exposed = 0)
+        val used = WorldScore.usageFactor(helpful = 5, harmful = 0, exposed = 0)
+        assertEquals(1.0, fresh, 1e-9)
+        assertTrue("被取用过的条目必须高于全新条目", used > fresh)
+    }
+
+    @Test
+    fun `曝光次数必须能压低条目`() {
+        val usedOnly = WorldScore.usageFactor(helpful = 5, harmful = 0, exposed = 0)
+        val alsoExposed = WorldScore.usageFactor(helpful = 5, harmful = 0, exposed = 10)
+        assertTrue("看过却没人取用应当压低它", alsoExposed < usedOnly)
+    }
+
+    @Test
+    fun `误导比单纯曝光更有害`() {
+        val exposed = WorldScore.usageFactor(helpful = 5, harmful = 0, exposed = 10)
+        val harmful = WorldScore.usageFactor(helpful = 5, harmful = 10, exposed = 0)
+        assertEquals(harmful, exposed, 1e-9)
+    }
+
+    @Test
+    fun `取用多且无负面信号的条目排在前面`() {
+        val good = WorldScore.usageFactor(helpful = 9, harmful = 0, exposed = 1)
+        val bad = WorldScore.usageFactor(helpful = 1, harmful = 0, exposed = 9)
+        assertTrue(good > bad)
+    }
+
+    @Test
+    fun `计数为负时不产生负分或除零`() {
+        assertEquals(1.0, WorldScore.usageFactor(-3, -1, -5), 1e-9)
+    }
+
     // ---- 查询词切分 ----
 
     @Test
