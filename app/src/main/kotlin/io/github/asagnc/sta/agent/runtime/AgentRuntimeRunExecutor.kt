@@ -85,10 +85,11 @@ internal class AgentRuntimeRunExecutor(
         request: AgentRuntimeWire.RunRequest,
     ): Outcome {
         val runController = session.controller
-        // 空间坐标从无到有后，历史观测的 scope 是空串；每次 run 启动时做一次幂等回填
-        // （只更新 scope 为空的行，第二次影响 0 行）。放在这里而不是启动页，是因为
-        // run 启动点已经保证了 appContext 可用，且观测库本来就在这条路径上被使用。
-        WorldKnowledgeStore.backfillScope(appContext, WORKSPACE_ROOT)
+        // 空间坐标从无到有后，历史观测的 scope 是空串；每次 run 启动时做一次幂等维护
+        // （回填坐标 + 回收形态不可复用的存量条目，第二次影响 0 行）。放在这里而不是
+        // 启动页，是因为 run 启动点已经保证了 appContext 可用，且观测库本来就在这条
+        // 路径上被使用；而清除只挂在写入路径上的话，只读的 run 永远不会触发它。
+        WorldKnowledgeStore.maintain(appContext, WORKSPACE_ROOT)
         val archivedEvents = mutableListOf<AgentEvent>()
         var toolExecutor: AutoCloseable? = null
         var localTools: AgentLocalTools? = null

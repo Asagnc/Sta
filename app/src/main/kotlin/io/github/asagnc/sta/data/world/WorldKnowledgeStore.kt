@@ -124,24 +124,30 @@ internal object WorldKnowledgeStore {
     }
 
     /**
-     * 把坐标未知的历史条目回填成当前工作区根。
+     * run 启动时做一次幂等维护：回填坐标、回收形态不可复用的存量条目。
      *
-     * 空间坐标从无到有后，历史条目的 scope 是空串，而空串在检索里按「最远」处理，
-     * 所有旧结论会因此排在后面。幂等：只更新 `scope = ''` 的行，第二次调用影响 0 行，
-     * 所以在 run 启动路径上直接调用是安全的，不需要额外的「已回填」标记位。
+     * 两件事都放在这里而不是只靠写入路径：写入在某些场景下不会发生（一个只读的 run
+     * 不会产生任何条目），而那些早于判据上线就已入库的坏数据会一直留在库里，既占保留
+     * 名额，也占检索窗口。启动点每次都会经过，因此不依赖下一次写入。
+     *
+     * 幂等性：坐标回填只更新 `scope = ''` 的行，清除只删判据不认的条目，两者第二次
+     * 调用都影响 0 行，可以无脑重复执行，不需要「已处理」标记位。
      */
-    fun backfillScope(context: Context?, scope: String) {
-        if (context == null || scope.isBlank()) return
+    fun maintain(context: Context?, scope: String) {
+        if (context == null) return
         try {
             runBlocking(Dispatchers.IO) {
                 val db = WorldDatabaseProvider.get(context)
                 db.withTransaction {
-                    db.knowledgeDao().backfillScope(scope)
-                    db.traceDao().backfillScope(scope)
+                    if (scope.isNotBlank()) {
+                        db.knowledgeDao().backfillScope(scope)
+                        db.traceDao().backfillScope(scope)
+                    }
+                    purgeUnusableWithin(db.knowledgeDao())
                 }
             }
         } catch (error: Throwable) {
-            WorldHealth.recordDegradation("knowledge.backfillScope", error)
+            WorldHealth.recordDegradation("knowledge.maintain", error)
         }
     }
 
