@@ -203,6 +203,21 @@ internal object WorldScore {
     }
 
     /**
+     * 取用率因子：`(1 + helpful) / (1 + helpful + harmful + exposed)`。
+     *
+     * 无任何阈值、也不依赖时间：分子分母都是这项痕迹自己的历史，因此排序完全由条目之间
+     * 的相对取用情况决定，不需要外部定下「多少次算没用」或「多少天算过期」。
+     *
+     * 三项全零时得 1.0，即新条目从中性位置出发，既不因“新”占便宜也不吃亏；曝光多而没
+     * 人取用会把它压下去，被取用多则拉上来。加 1 是平滑项，避免除零与“首次被曝光就判死”。
+     */
+    fun usageFactor(helpful: Int, harmful: Int, exposed: Int): Double {
+        val h = helpful.coerceAtLeast(0)
+        val bad = harmful.coerceAtLeast(0) + exposed.coerceAtLeast(0)
+        return (h + 1).toDouble() / (h + bad + 1).toDouble()
+    }
+
+    /**
      * 把查询串切成检索词。
      *
      * 与实体抽取的切分口径一致（英文按分隔符、中文按二元），

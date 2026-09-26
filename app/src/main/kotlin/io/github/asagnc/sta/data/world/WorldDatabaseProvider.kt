@@ -27,7 +27,7 @@ internal object WorldDatabaseProvider {
             )
                 // 本库是运行观测，版本不匹配时重建即可：不写迁移，也就不可能迁移出错。
                 .fallbackToDestructiveMigration(dropAllTables = true)
-                .addMigrations(WorldDatabase.MIGRATION_4_5)
+                .addMigrations(WorldDatabase.MIGRATION_4_5, WorldDatabase.MIGRATION_5_6)
                 // WAL：读不阻塞写、写不阻塞读。本库的写入来自工具失败与委派回收（分散在
                 // 多条路径上），读取来自回注与排查，两者会并发发生。
                 .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)

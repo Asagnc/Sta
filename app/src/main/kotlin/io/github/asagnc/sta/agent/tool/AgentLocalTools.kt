@@ -650,6 +650,9 @@ internal class AgentLocalTools(
                     .put("message", "观测库里没有与「$query」相关的历史结论。"),
             )
         }
+        // 取用即投票：本次检索命中的条目记一次 helpful。痕迹的价值由此自己长出来，
+        // 不需要任何外部判定——被取用的浮上来，没人取用的自然沉下去。
+        WorldKnowledgeStore.markHelpful(requireContext(), entries.map { it.id })
         return withWorldHealth(
             JSONObject()
                 .put("ok", true)

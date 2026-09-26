@@ -18,8 +18,15 @@ internal object WorldKnowledgeStore {
     /** 条目数上限，超出后按时间裁掉最旧的。 */
     const val KEEP_ENTRIES = 500
 
-    /** 默认有效期：7 天。超过这个时间的观测结论默认不再注入。 */
-    const val DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000
+    /**
+     * 条目不再按时间过期。
+     *
+     * 原先的 7 天有效期是外部替世界定下的「多久算旧」：一条长期有用但近期没人碰的结论会
+     * 被时间删掉，而真正没用的条目反而能靠不断重新写入而活着。痕迹是否继续参与注入，
+     * 改由取用与曝光的计数决定（见 [WorldScore.usageFactor]），不再看日历。
+     * 0 即「不过期」，已落库的条目也照此处理。
+     */
+    const val DEFAULT_TTL_MS = 0L
 
     /** 观测库文件，供排查与清理使用。 */
     fun fileFor(context: Context): File = WorldDatabaseProvider.fileFor(context)
@@ -171,20 +178,39 @@ internal object WorldKnowledgeStore {
     }
 
     /**
+     * 记一次取用：本次检索命中的条目累加 helpful。
+     *
+     * 这是「痕迹有没有用」的唯一依据，不由外部判定也不靠关键词猜：被取用的上浮，
+     * 没人取用的自然沉底。计分是运行副产物，写失败只留痕，不影响检索结果本身。
+     */
+    fun markHelpful(context: Context?, ids: List<String>) {
+        if (context == null || ids.isEmpty()) return
+        try {
+            runBlocking(Dispatchers.IO) {
+                WorldDatabaseProvider.get(context).knowledgeDao().markHelpful(ids)
+            }
+        } catch (error: Throwable) {
+            WorldHealth.recordDegradation("knowledge.markHelpful", error)
+        }
+    }
+
+    /**
      * 清除形态不可复用的存量条目，返回删除条数。
      *
-     * 写入侧只拦得住新数据，而修复之前入库的条目（整份报告、工具输出流水账、交白卷）
-     * 会一直留在库里占着保留名额。这里据同一套判据回收，由 [write] 在它已有的写事务里
+     * 写入侧只拦得住新数据，而修复之前入库的条目（工具输出流水账、交白卷）会一直留在
+     * 库里占着保留名额与检索窗口。这里据同一套判据回收，由 [write] 在它已有的写事务里
      * 顺带调用，不必等下一次 App 启动。
+     *
+     * 判据只有形态，不含长度：长度不是价值判据，长结论仍可能是有用的（见
+     * [WorldKnowledgeLogic.reusableSummary]）。
      */
     private suspend fun purgeUnusableWithin(dao: WorldKnowledgeDao): Int {
-        val overLength = dao.overLengthIds(WorldKnowledgeLogic.MAX_SUMMARY_CHARS)
-        if (overLength.isNotEmpty()) dao.deleteByIds(overLength)
         val unusable = dao.recentAny(PURGE_SCAN_LIMIT)
             .filterNot { WorldKnowledgeLogic.isUsableStoredSummary(it.summary) }
             .map { it.id }
-        if (unusable.isNotEmpty()) dao.deleteByIds(unusable)
-        return overLength.size + unusable.size
+        if (unusable.isEmpty()) return 0
+        dao.deleteByIds(unusable)
+        return unusable.size
     }
 
     /** 一次清除扫描的条目上限；照保留上限取即可，库里不会多于这个量级。 */
@@ -237,7 +263,7 @@ internal object WorldKnowledgeStore {
 
     /** 读回的一条观测，附带新鲜度判定。 */
     data class Recalled(
-        /** 条目 id：排序后要按它把结果映射回原文，也是图上节点的端点。 */
+        /** 条目 id：排序后要按它把结果映射回原文，也是取用计分的锚点。 */
         val id: String,
         /** 条目种类：参与重要度打分。 */
         val kind: String,
@@ -249,6 +275,10 @@ internal object WorldKnowledgeStore {
         val createdAt: Long,
         val freshness: WorldKnowledgeLogic.Freshness,
         val sensitive: Boolean,
+        /** 取用/误导/曝光计数，参与取用率因子。默认 0 供单测直接构造。 */
+        val helpful: Int = 0,
+        val harmful: Int = 0,
+        val exposed: Int = 0,
     )
 
     /**
@@ -320,7 +350,7 @@ internal object WorldKnowledgeStore {
                         kind = entry.kind,
                         hasEvidence = entry.evidence.isNotBlank(),
                         hasUncertainty = entry.uncertainty.isNotBlank(),
-                    ),
+                    ) * WorldScore.usageFactor(entry.helpful, entry.harmful, entry.exposed),
                     relevance = WorldScore.relevanceFor(
                         text = "${entry.summary}\n${entry.evidence}\n${entry.uncertainty}",
                         terms = terms,
@@ -383,6 +413,9 @@ internal object WorldKnowledgeStore {
             createdAt = createdAt,
             freshness = WorldKnowledgeLogic.checkFreshness(dependencies, readContent),
             sensitive = sensitive,
+            helpful = helpful,
+            harmful = harmful,
+            exposed = exposed,
         )
     }
 

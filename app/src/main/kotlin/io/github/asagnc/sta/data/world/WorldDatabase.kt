@@ -53,6 +53,21 @@ internal data class WorldKnowledgeEntity(
     @ColumnInfo(name = "dependencies") val dependencies: String,
     @ColumnInfo(name = "sensitive") val sensitive: Boolean,
     /**
+     * 被取用的次数：痕迹「有用」的唯一依据。
+     *
+     * 由取用方在检索命中时累加，不靠任何外部判定——谁被取用得多，谁就上浮。
+     */
+    @ColumnInfo(name = "helpful") val helpful: Int = 0,
+    /** 被取用后判定为误导的次数（依赖已变、结论已不成立），排序时会压制它。 */
+    @ColumnInfo(name = "harmful") val harmful: Int = 0,
+    /**
+     * 被曝光但没有被取用的次数。
+     *
+     * 注入里出现过、而整个 run 结束都没人去取，这说明它对当前任务没有价值。
+     * 没有这个计数，「看过但没用」这条最普遍的信号就完全丢失了。
+     */
+    @ColumnInfo(name = "exposed") val exposed: Int = 0,
+    /**
      * 该条观测所属的空间坐标（工作区根路径，形如 `/data/local/tmp/sta/Sta-src`）。
      *
      * 「空间」这个维度不是装饰：同一句结论在不同工作区里含义不同，只按关键词检索会让
@@ -115,18 +130,21 @@ internal interface WorldKnowledgeDao {
     )
     suspend fun newestAtByKind(kind: String, now: Long): Long
 
-    /**
-     * 结论超出长度上限的条目 id。
-     *
-     * 长度判据能写进 SQL，因此这一类可以一把捞出来；其余判据（交白卷、工具输出流水账）
-     * 是关键词匹配，SQL 表达不了，由调用方按读取结果逐条判定。
-     */
-    @Query("SELECT id FROM world_knowledge WHERE length(summary) > :maxChars")
-    suspend fun overLengthIds(maxChars: Int): List<String>
-
     /** 按 id 批量删除。 */
     @Query("DELETE FROM world_knowledge WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<String>)
+
+    /** 记一次取用：检索命中的条目累加 helpful。 */
+    @Query("UPDATE world_knowledge SET helpful = helpful + 1 WHERE id IN (:ids)")
+    suspend fun markHelpful(ids: List<String>)
+
+    /** 记一次误导：被取用但结论已不成立时累加 harmful。 */
+    @Query("UPDATE world_knowledge SET harmful = harmful + 1 WHERE id IN (:ids)")
+    suspend fun markHarmful(ids: List<String>)
+
+    /** 记一次曝光：注入里出现过但整轮未被取用。 */
+    @Query("UPDATE world_knowledge SET exposed = exposed + 1 WHERE id in (:ids)")
+    suspend fun markExposed(ids: List<String>)
 
     /**
      * 取最近的条目（不限种类、不过滤过期）。
@@ -293,8 +311,10 @@ internal abstract class WorldDatabase : RoomDatabase() {
          * 4：新增空间维度——knowledge / trace 增加 scope 坐标；新增 world_entity（实体）
          *    与 world_edge（分层的边）两张表。
          * 5：删除 world_entity 与 world_edge——建图没有任何读取方，属实只写不读。
+         * 6：world_knowledge 增加 helpful / harmful / exposed 三个计数——痕迹的价值由
+         *    取用与曝光自己长出来，不再由关键词判据或 TTL 代替。
          */
-        const val VERSION = 5
+        const val VERSION = 6
 
         const val FILE_NAME = "world.db"
 
@@ -309,6 +329,20 @@ internal abstract class WorldDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("DROP TABLE IF EXISTS world_entity")
                 db.execSQL("DROP TABLE IF EXISTS world_edge")
+            }
+        }
+
+        /**
+         * 5 → 6 的迁移：加三个计数列。
+         *
+         * 新列带默认值 0，因此已有条目全部从「零取用」开始——旧数据本来就没有取用记录，
+         * 这正是它的真实状态，不需要回填。
+         */
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE world_knowledge ADD COLUMN helpful INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE world_knowledge ADD COLUMN harmful INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE world_knowledge ADD COLUMN exposed INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

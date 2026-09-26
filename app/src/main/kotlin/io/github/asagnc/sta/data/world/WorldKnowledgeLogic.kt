@@ -81,7 +81,7 @@ internal object WorldKnowledgeLogic {
 
     /** 这条结论是不是「查不到」型的空集结论（不该入库）。 */
     fun isInconclusiveConclusion(conclusion: String): Boolean {
-        val flat = oneLine(conclusion)
+        val flat = flatten(conclusion)
         if (flat.isEmpty()) return true
         if (flat.length <= BARE_DISCLAIMER_CHARS &&
             BARE_DISCLAIMER_NEGATIONS.any { flat.contains(it) }
@@ -92,37 +92,31 @@ internal object WorldKnowledgeLogic {
         return INCONCLUSIVE_MARKERS.any { head.contains(it) }
     }
 
-    /** 入库 summary 的字符上限。 */
-    const val MAX_SUMMARY_CHARS = 240
-
     /**
      * 把一条委派结论整理成可入库的 summary；不可复用时返回 null。
      *
-     * 写库侧必须在这里收敛，因为子智能体交回的文本形态并不受控：格式不合规时
-     * [AgentSubAgentSummary.parse] 会把整份报告当结论（实测有近 4000 字的），
-     * 而它一旦入库就会被当作历史结论反复注入。这里的取向是**截断而不是丢弃**：
-     * 长报告的首段通常就是它的结论句，保留有界的一段仍可被检索到，整份原文仍完整留在
-     * 委派轨迹里。只有确实不含可复用信息的形态（交白卷、工具输出流水账）才判为不可复用。
+     * 只做形态筛除，**不按长度截断**。截断换来的是存储上少几个字符，代价是丢掉结论里的
+     * 细节——而被丢掉的往往正是后来才显得关键的那部分（Agentic Context Engineering 把
+     * 这种损失命名为 brevity bias，列为语境演化要避免的首要失败模式）。体量由使用侧处理：
+     * 注入只渲染标题（见 [titleOf]），检索结果的展示由 [oneLine] 封顶。
      */
     fun reusableSummary(conclusion: String): String? {
-        val flat = oneLine(conclusion)
+        val flat = flatten(conclusion)
         if (flat.isEmpty()) return null
         if (isInconclusiveConclusion(flat)) return null
         if (isRawToolOutputConclusion(flat)) return null
-        if (flat.length <= MAX_SUMMARY_CHARS) return flat
-        return flat.take(MAX_SUMMARY_CHARS - 1) + "…"
+        return flat
     }
 
     /**
      * 存量条目是否仍算可复用。
      *
-     * 读回来的条目要再过一遍写入侧那套判据，因为长度上限与标记表都是后加的，修复之前
-     * 入库的条目（整份报告、工具输出流水账、交白卷）仍在库里。它们不该出现在注入或
-     * 检索结果里，只应由清除路径回收。
+     * 读回来的条目要再过一遍写入侧那套判据（不含长度——长度不是价值判据）：形态不可复用
+     * 的条目仍在库里，它们不该出现在注入或检索结果里，只应由清除路径回收。
      */
     fun isUsableStoredSummary(summary: String): Boolean {
-        val flat = oneLine(summary)
-        if (flat.isEmpty() || flat.length > MAX_SUMMARY_CHARS) return false
+        val flat = flatten(summary)
+        if (flat.isEmpty()) return false
         if (isInconclusiveConclusion(flat)) return false
         return !isRawToolOutputConclusion(flat)
     }
@@ -141,7 +135,7 @@ internal object WorldKnowledgeLogic {
      * 不按英文句点——工具名与文件路径里都有 `.`，按它切会切出半截词。
      */
     fun titleOf(summary: String): String {
-        val flat = oneLine(summary)
+        val flat = flatten(summary)
         if (flat.length <= MAX_TITLE_CHARS) return flat
         val head = flat.take(MAX_TITLE_CHARS)
         val end = head.indexOfFirst { it in TITLE_TERMINATORS }
@@ -162,7 +156,7 @@ internal object WorldKnowledgeLogic {
      * 与空集判定同一种取向：宁可漏判（照旧入库），也不要误杀正常结论。
      */
     fun isRawToolOutputConclusion(conclusion: String): Boolean {
-        val flat = oneLine(conclusion)
+        val flat = flatten(conclusion)
         return RAW_TOOL_OUTPUT_PREFIX.containsMatchIn(flat) && flat.contains(RAW_TOOL_OUTPUT_MARKER)
     }
 
@@ -338,11 +332,25 @@ internal object WorldKnowledgeLogic {
         }
     }
 
-    /** 压成一行：注入上下文时不能因为原文带换行就撑开成多条消息。 */
-    private fun oneLine(value: String): String =
-        value.replace(Regex("\\s+"), " ").trim().take(MAX_RECALL_CHARS)
+    /**
+     * 压成一行，不截断。
+     *
+     * 供判据与存储使用：这些位置需要看到完整文本，截断会让判据看错尾巴上的内容，
+     * 也会把结论的关键细节丢在入库之前。需要控制展示体量的地方用 [oneLine]。
+     */
+    fun flatten(value: String): String =
+        value.replace(Regex("\\s+"), " ").trim()
 
-    /** 单条结论注入时的字符上限。 */
+    /**
+     * 压成一行并限长，供展示使用。
+     *
+     * 只用在把内容拼给模型看的位置（检索结果的渲染）：那里必须给体量封顶，
+     * 否则一次检索就能把上下文吃掉。存储与判据不走这里。
+     */
+    private fun oneLine(value: String): String =
+        flatten(value).take(MAX_RECALL_CHARS)
+
+    /** 单条结论在检索结果里展示时的字符上限。 */
     const val MAX_RECALL_CHARS = 300
 
     /**
